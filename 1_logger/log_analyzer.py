@@ -11,8 +11,8 @@ import logging
 import time
 from string import Template
 import sys
-import json
 import os
+import argparse
 
 
 FILE_PATTERN = r'nginx-access-ui\.log-[0-9]{8}\.(gz|plain)'
@@ -22,8 +22,8 @@ config = {
     "REPORT_SIZE": 10,
     "REPORT_DIR": "./reports",
     "LOG_DIR": "./log", "FILE_PATTERN": FILE_PATTERN,
-    "LOG_FILE": None, "DEFAULT_CONFIG": "setting.txt",
-    "THRESHOLD_OF_ERRORS": 10,
+    "LOG_FILE": None, "DEFAULT_CONFIG": "settings.cfg",
+    "THRESHOLD_OF_ERRORS": 10, "TEMPLATE": "report.html",
 }
 
 
@@ -33,65 +33,59 @@ def main(config):
     for working with .plain or .gz log files
     The result of working that function is html log file.
     """
-
     try:
-        # read config file which set up from command line if exists one
-        sys_argv = sys.argv
-        if '--config' in sys_argv:
-            config["DEFAULT_CONFIG"] = sys_argv[-1]
+        active_config = dict(config)
 
-        with open(config["DEFAULT_CONFIG"]) as file:
-            content = file.read()
-            js = json.loads(content)
+        # set command line params
+        parser = argparse.ArgumentParser(description="Analyzer log file")
+        parser.add_argument('--config',
+                            type=str,
+                            default=active_config["DEFAULT_CONFIG"],
+                            help='sets path to active_config file')
 
-        for key, value in js.items():
-            config[key] = value
-
+        # set logging params
         logging.basicConfig(format='[%(asctime)s] %(levelname)s %(message)s',
                             level=logging.DEBUG,
                             datefmt=time.strftime('%Y.%m.%d %H:%M:%S'),
-                            filename=config["LOG_FILE"], filemode="w")
+                            filename=active_config["LOG_FILE"], filemode="w")
 
-        searched_file = sr.search_last_file(file_pattern=config["FILE_PATTERN"],
-                                            path=config["LOG_DIR"])
+        # read config file
+        args = parser.parse_args()
+        sr.set_config(args.config, active_config)
+
+        searched_file = sr.search_last_file(file_pattern=active_config["FILE_PATTERN"],
+                                            path=active_config["LOG_DIR"])
         if searched_file.path is None:
             logging.info("There are no files for analize")
             sys.exit()
 
-        if not os.path.exists(config["REPORT_DIR"]):
-            os.makedirs(config["REPORT_DIR"])
+        if not os.path.exists(active_config["REPORT_DIR"]):
+            os.makedirs(active_config["REPORT_DIR"])
 
         new_file = f"report-{searched_file.date.strftime('%Y.%m.%d')}.html"
 
         # search all ready exists log file
-        if os.path.exists(os.path.join(config["REPORT_DIR"], new_file)):
+        if os.path.exists(os.path.join(active_config["REPORT_DIR"], new_file)):
             logging.info(f"File with name {new_file} already exists")
             sys.exit()
 
         logging.info("Please wait. Analyze in progress... ")
+
+        # parsing data from log file
         errors_counter = [0]
         logs = (sr.parser(searched_file.path, searched_file.ext, errors_counter))
-
-        # creating path for log file
-
-        path = os.path.join(config["REPORT_DIR"], new_file)
-
-        with open("report.html", "r") as file:
-            file_content = file.readlines()
-        for index in range(len(file_content)):
-            if "$table_json" in file_content[index]:
-                templ = Template(file_content[index])
-                line = templ.safe_substitute(table_json=sr.analyze_formater(config["REPORT_SIZE"], logs))
-                file_content[index] = line
-                break
-
-        if errors_counter[0] / config["REPORT_SIZE"] * 100 > config["THRESHOLD_OF_ERRORS"]:
+        data = sr.analyze_formater(active_config["REPORT_SIZE"], logs)
+        if errors_counter[0] / active_config["REPORT_SIZE"] * 100 > active_config["THRESHOLD_OF_ERRORS"]:
             logging.info("Analysis has faild. Could not parse most of the log. Error threshold exceeded")
             sys.exit()
 
-        with open(path, "w") as file:
-            for line in file_content:
-                file.write(line)
+        # creating path for log file
+
+        path = os.path.join(active_config["REPORT_DIR"], new_file)
+
+        # creating log file
+        sr.write_log_file(template=active_config["TEMPLATE"], path=path,
+                          data=data)
 
         logging.info("Analysis was completed successfully")
 

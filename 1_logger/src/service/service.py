@@ -4,6 +4,10 @@ from collections import namedtuple
 import os
 from datetime import datetime as dt
 import logging
+import json
+from string import Template
+
+SelectedFile = namedtuple("SelectedFile", "date ext path")
 
 
 def search_last_file(file_pattern, path):
@@ -16,7 +20,6 @@ def search_last_file(file_pattern, path):
     SelectedFile = namedtuple("SelectedFile", "date ext path")
 
     pat = re.compile(file_pattern)
-    filtered_files = []
 
     sel_file = SelectedFile(None, None, None)
 
@@ -24,15 +27,14 @@ def search_last_file(file_pattern, path):
 
     for file in files_list:
         if re.fullmatch(pat, file):
-            filtered_files.append(file)
-
-    for file in filtered_files:
-        temp_list = file.split("-")[-1].split(".")
-        temp_file = SelectedFile(dt.strptime(temp_list[0], '%Y%m%d'),
-                                 temp_list[1], os.path.join(path, file))
-
-        if sel_file.date is None or temp_file.date > sel_file.date:
-            sel_file = temp_file
+            temp_list = file.split("-")[-1].split(".")
+            try:
+                temp_file = SelectedFile(dt.strptime(temp_list[0], '%Y%m%d'),
+                                         temp_list[1], os.path.join(path, file))
+            except Exception:
+                logging.exception("Got exception")
+            if sel_file.date is None or temp_file.date > sel_file.date:
+                sel_file = temp_file
 
     return sel_file
 
@@ -40,10 +42,10 @@ def search_last_file(file_pattern, path):
 def parser(path, ext, errors_counter):
     """
     The function-generator is parsing a report file ("path"
-    with extension "ext") and yields tuple (url, reauest_time)
+    with extension "ext") and yields tuple (url, request_time)
     for every line of report file.
     The function counts number of Exception that stored in list with one item
-    errors_counter. This parametr should passed into function by link.
+    "errors_counter". This parametr should passed into function by link.
     """
 
     opener = gzip.open if ext == 'gz' else open
@@ -112,3 +114,29 @@ def analyze_formater(report_size, parser):
         item["time_perc"] = f"{item['time_perc']:.3f}"
         item["time_avg"] = f"{item['time_avg']:.3f}"
     return list_out
+
+
+def set_config(path, config):
+    """
+    The function reads settings from "path" and sets ones into "config"
+    Variable "config" should passed into function by link
+    """
+    with open(path) as file:
+            content = file.read()
+            js = json.loads(content)
+
+    for key, value in js.items():
+        config[key] = value
+
+
+def write_log_file(template, path, data):
+    """
+    The function replaces "data" with pattern(table_json)
+    in "template" file and writes into the "path"
+    """
+    with open(template, "r") as file:
+        content = file.read()
+    temp = Template(content)
+    content_with_data = temp.safe_substitute(table_json=data)
+    with open(path, "w") as file:
+        file.write(content_with_data)
