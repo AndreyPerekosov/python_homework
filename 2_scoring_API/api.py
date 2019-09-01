@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 import abc
@@ -37,7 +37,17 @@ GENDERS = {
 }
 
 
-class BaseRequest():
+class _MetaRequest(type):
+    def __new__(cls, name, bases, attrs):
+        new_attrs = dict(attrs)
+        fields_to_validate = {}
+        for attr in attrs.keys():
+            if hasattr(new_attrs[attr], 'required'):
+                new_attrs['_' + attr], new_attrs[attr] = new_attrs[attr], new_attrs[attr].value
+        return type.__new__(cls, name, bases, new_attrs)
+
+
+class BaseRequest(metaclass=_MetaRequest):
 
     @classmethod
     def property_set(cls, prop):
@@ -45,7 +55,7 @@ class BaseRequest():
         for attr in cls.__dict__.keys():
             if hasattr(cls.__dict__[attr], prop):
                 if cls.__dict__[attr].__dict__[prop]:
-                    prop_list.append(attr)
+                    prop_list.append(attr[1:])
         return set(prop_list)
 
     def validate(self, data_dict):
@@ -53,7 +63,10 @@ class BaseRequest():
         for data_attr in data_dict.keys():
             if hasattr(self, data_attr):
                 try:
-                    setattr(self, data_attr, data_dict[data_attr])
+                    inst = getattr(self, '_' + data_attr)
+                    inst.validate(data_dict[data_attr])
+                    inst.value = data_dict[data_attr]
+                    setattr(self, data_attr, inst.value)
                 except Exception as e:
                     invalid_fields.append((data_attr, e))
         return invalid_fields
@@ -62,35 +75,30 @@ class BaseRequest():
         raise NotImplementedError
 
 
+
+
 class BaseField():
     """
     Define base logic of parametrs field
     """
 
-    def __init__(self, required=False, nullable=False):
+    def __init__(self, type, required=False, nullable=False, value=None):
         self.required = required
         self.nullable = nullable
-
-
-class TypedProperty(BaseField):
-    """
-    Define base logic that working with content of fields
-    """
-
-    def __init__(self, type, default=None, **kwargs):
         self.type = type
-        self.default = default
-        super().__init__(**kwargs)
+        self._value = value
 
-    def __set_name__(self, cls, name):
-        self.name = '_' + name
+    @property
+    def value(self):
+        return self._value
 
-    def __get__(self, instance, cls):
-        return getattr(instance, self.name, self.default)
+    @value.setter
+    def value(self, value):
+        self._value = value
 
-    def __set__(self, instance, value):
+    def validate(self, value):
         if (self.nullable and not value) or (isinstance(value, self.type) and value):
-            setattr(instance, self.name, value)
+            return True
         else:
             if not self.nullable and not value:
                 raise ValueError("Blank value are not required")
@@ -98,95 +106,83 @@ class TypedProperty(BaseField):
                 raise TypeError("Must be a %s" % self.type)
 
 
-class _MetaField(type):
-    """
-    Define metaclass that provides include into inherit base
-    class TypedProperty
-    """
-    def __new__(cls, name, bases, attrs):
-        if TypedProperty not in bases:
-            bases = list(bases)
-            bases.append(TypedProperty)
-            bases = tuple(bases)
-        return type.__new__(cls, name, bases, attrs)
-
-
-class CharField(metaclass=_MetaField):
+class CharField(BaseField):
     def __init__(self, **kwargs):
         super().__init__(type=str, **kwargs)
 
 
-class ArgumentsField(metaclass=_MetaField):
+class ArgumentsField(BaseField):
     def __init__(self, **kwargs):
         super().__init__(type=dict, **kwargs)
 
 
 class EmailField(CharField):
-    def __set__(self, instance, value):
+    def validate(self, value):
         if '@' in value or not value:
-            super().__set__(instance, value)
+            super().validate(value)
         else:
             raise TypeError("Must be correct email")
 
 
-class PhoneField(metaclass=_MetaField):
+class PhoneField(BaseField):
 
     def __init__(self, **kwargs):
         super().__init__(type=str, **kwargs)
 
-    def __set__(self, instance, value):
+    def validate(self, value):
         if not value:
-            super().__set__(instance, value)
+            super().validate(value)
         if isinstance(value, (str, int)):
             value = str(value)
             if len(value) == 11 and value[0] == '7':
-                super().__set__(instance, value)
+                 super().validate(value)
             else:
                 raise ValueError("Must be telefone number like 7*******")
         else:
             raise TypeError("Must be string or int number")
 
 
-class DateField(metaclass=_MetaField):
+class DateField(BaseField):
     def __init__(self, **kwargs):
         super().__init__(type=str, **kwargs)
 
-    def __set__(self, instance, value):
+    def validate(self, value):
         if not value or datetime.datetime.strptime(value, '%d.%m.%Y'):
-            super().__set__(instance, value)
+            super().validate(value)
 
 
-class BirthDayField(metaclass=_MetaField):
+class BirthDayField(BaseField):
 
     def __init__(self, **kwargs):
         super().__init__(type=str, **kwargs)
 
-    def __set__(self, instance, value):
+    def validate(self, value):
         if not value or ((datetime.datetime.now() - datetime.datetime.strptime(value, '%d.%m.%Y')).days / 365 <= 70):
-            super().__set__(instance, value)
+            super().validate(value)
         else:
-            raise ValueError("Sorry! A person should be younger than 71 years old")
+            raise ValueError("Sorry! You should be younger than 71 years old")
 
 
-class GenderField(metaclass=_MetaField):
+class GenderField(BaseField):
     def __init__(self, **kwargs):
         super().__init__(type=int, **kwargs)
 
-    def __set__(self, instance, value):
+    def validate(self, value):
         if not value or value in [UNKNOWN, MALE, FEMALE]:
-            super().__set__(instance, value)
+            super().validate(value)
         else:
             raise ValueError("Value must be integer 0, 1, 2")
 
 
-class ClientIDsField(metaclass=_MetaField):
+class ClientIDsField(BaseField):
     def __init__(self, **kwargs):
         super().__init__(type=list, **kwargs)
-    def __set__(self, instance, value):
+
+    def validate(self, value):
         if len(list(filter(lambda item: isinstance(item, int), value))) == len(value) or not value:
-            super().__set__(instance, value)
+            super().validate(value)
         else:
-            raise ValueError("Items of list must be integer type")
+            raise ValueError("Items of list must be integer")
 
 
 class ClientsInterestsRequest(BaseRequest):
@@ -244,6 +240,44 @@ def check_auth(request):
     return False
 
 
+def is_args_validated(req, inst):
+    if not inst.property_set('required').issubset(req.arguments.keys()):
+        return f"required fields:{inst.property_set('required').difference(req.arguments.keys())}", INVALID_REQUEST
+    errors = inst.validate(req.arguments)
+    if errors:
+        return errors, INVALID_REQUEST
+    return True
+
+
+def online_score(req, ctx, store):
+    method_inst = OnlineScoreRequest()
+    is_valid = is_args_validated(req, method_inst)
+    if is_valid != True:
+        return is_valid
+    ctx['has'] = method_inst.get_context(req.arguments)
+    if req.is_admin:
+        return {"score": 42}, OK
+    else:
+        return {"score": scoring.get_score(store, method_inst.phone,
+                method_inst.email, method_inst.birthday,
+                method_inst.gender, method_inst.first_name,
+                method_inst.last_name)}, OK
+
+
+def clients_interests(req, ctx, store):
+    method_inst = ClientsInterestsRequest()
+    is_valid = is_args_validated(req, method_inst) 
+    if is_valid !=True:
+        return is_valid
+    ctx['nclients'] = method_inst.get_context(req.arguments)
+    return {str(item): scoring.get_interests(store, item) for item in method_inst.client_ids}, OK
+
+
+METHODS = {
+           "online_score": online_score, 
+           "clients_interests":clients_interests
+          }
+
 def method_handler(request, ctx, store):
     response, code = None, None
     req = MethodRequest()
@@ -254,25 +288,7 @@ def method_handler(request, ctx, store):
         return ERRORS[BAD_REQUEST], BAD_REQUEST
     if not check_auth(req):
         return ERRORS[FORBIDDEN], FORBIDDEN
-    method_inst = OnlineScoreRequest() if req.method == 'online_score' else ClientsInterestsRequest()
-    if not method_inst.property_set('required').issubset(req.arguments.keys()):
-        return f"required fields:{method_inst.property_set('required').difference(req.arguments.keys())}", INVALID_REQUEST
-    errors = method_inst.validate(req.arguments)
-    if errors:
-        return errors, INVALID_REQUEST
-    if isinstance(method_inst, OnlineScoreRequest):
-        ctx['has'] = method_inst.get_context(req.arguments)
-        if req.is_admin:
-            return {"score": 42}, OK
-        else:
-            return {"score": scoring.get_score(store, method_inst.phone,
-                    method_inst.email, method_inst.birthday,
-                    method_inst.gender, method_inst.first_name,
-                    method_inst.last_name)}, OK
-    else:
-        ctx['nclients'] = method_inst.get_context(req.arguments)
-        return {str(item): scoring.get_interests(store, item) for item in method_inst.client_ids}, OK
-
+    return METHODS[req.method](req, ctx, store)
 
 class MainHTTPHandler(BaseHTTPRequestHandler):
     router = {
