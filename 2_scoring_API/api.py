@@ -9,7 +9,10 @@ import hashlib
 import uuid
 from optparse import OptionParser
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import scoring
+if __package__:
+    from . import scoring
+else:
+    import scoring    
 
 SALT = "Otus"
 ADMIN_LOGIN = "admin"
@@ -37,36 +40,36 @@ GENDERS = {
 }
 
 
+class ValidationError(Exception):
+    def __init__(self, msg):
+        self.txt = msg
+
+
 class _MetaRequest(type):
     def __new__(cls, name, bases, attrs):
         new_attrs = dict(attrs)
         fields_to_validate = {}
+        required_fields = []
         for attr in attrs.keys():
-            if hasattr(new_attrs[attr], 'required'):
-                new_attrs['_' + attr], new_attrs[attr] = new_attrs[attr], new_attrs[attr].value
+            if hasattr(new_attrs[attr], 'required') and hasattr(new_attrs[attr], 'nullable'):
+                if new_attrs[attr].required:
+                    required_fields.append(attr)
+                fields_to_validate[attr] = new_attrs[attr].validate
+                new_attrs['_' + attr], new_attrs[attr] = new_attrs[attr], None
+        new_attrs["validators"] = fields_to_validate
+        new_attrs["required_fields"] = set(required_fields)
         return type.__new__(cls, name, bases, new_attrs)
 
 
 class BaseRequest(metaclass=_MetaRequest):
-
-    @classmethod
-    def property_set(cls, prop):
-        prop_list = []
-        for attr in cls.__dict__.keys():
-            if hasattr(cls.__dict__[attr], prop):
-                if cls.__dict__[attr].__dict__[prop]:
-                    prop_list.append(attr[1:])
-        return set(prop_list)
 
     def validate(self, data_dict):
         invalid_fields = []
         for data_attr in data_dict.keys():
             if hasattr(self, data_attr):
                 try:
-                    inst = getattr(self, '_' + data_attr)
-                    inst.validate(data_dict[data_attr])
-                    inst.value = data_dict[data_attr]
-                    setattr(self, data_attr, inst.value)
+                    self.validators[data_attr](data_dict[data_attr])
+                    setattr(self, data_attr, data_dict[data_attr])
                 except Exception as e:
                     invalid_fields.append((data_attr, e))
         return invalid_fields
@@ -75,35 +78,24 @@ class BaseRequest(metaclass=_MetaRequest):
         raise NotImplementedError
 
 
-
-
 class BaseField():
     """
     Define base logic of parametrs field
     """
 
-    def __init__(self, type, required=False, nullable=False, value=None):
+    def __init__(self, type, required=False, nullable=False):
         self.required = required
         self.nullable = nullable
         self.type = type
-        self._value = value
-
-    @property
-    def value(self):
-        return self._value
-
-    @value.setter
-    def value(self, value):
-        self._value = value
 
     def validate(self, value):
         if (self.nullable and not value) or (isinstance(value, self.type) and value):
             return True
         else:
             if not self.nullable and not value:
-                raise ValueError("Blank value are not required")
+                raise ValidationError("Blank value are not required")
             else:
-                raise TypeError("Must be a %s" % self.type)
+                raise ValidationError("Must be a %s" % self.type)
 
 
 class CharField(BaseField):
@@ -119,9 +111,9 @@ class ArgumentsField(BaseField):
 class EmailField(CharField):
     def validate(self, value):
         if '@' in value or not value:
-            super().validate(value)
+            return super().validate(value)
         else:
-            raise TypeError("Must be correct email")
+            raise ValidationError("Must be correct email")
 
 
 class PhoneField(BaseField):
@@ -131,15 +123,15 @@ class PhoneField(BaseField):
 
     def validate(self, value):
         if not value:
-            super().validate(value)
+            return super().validate(value)
         if isinstance(value, (str, int)):
             value = str(value)
             if len(value) == 11 and value[0] == '7':
-                 super().validate(value)
+                return super().validate(value)
             else:
-                raise ValueError("Must be telefone number like 7*******")
+                raise ValidationError("Must be telefone number like 7*******")
         else:
-            raise TypeError("Must be string or int number")
+            raise ValidationError("Must be string or int number")
 
 
 class DateField(BaseField):
@@ -148,19 +140,16 @@ class DateField(BaseField):
 
     def validate(self, value):
         if not value or datetime.datetime.strptime(value, '%d.%m.%Y'):
-            super().validate(value)
+            return super().validate(value)
 
 
-class BirthDayField(BaseField):
-
-    def __init__(self, **kwargs):
-        super().__init__(type=str, **kwargs)
+class BirthDayField(DateField):
 
     def validate(self, value):
         if not value or ((datetime.datetime.now() - datetime.datetime.strptime(value, '%d.%m.%Y')).days / 365 <= 70):
-            super().validate(value)
+            return super().validate(value)
         else:
-            raise ValueError("Sorry! You should be younger than 71 years old")
+            raise ValidationError("Sorry! You should be younger than 71 years old")
 
 
 class GenderField(BaseField):
@@ -169,9 +158,9 @@ class GenderField(BaseField):
 
     def validate(self, value):
         if not value or value in [UNKNOWN, MALE, FEMALE]:
-            super().validate(value)
+            return super().validate(value)
         else:
-            raise ValueError("Value must be integer 0, 1, 2")
+            raise ValidationError("Value must be integer 0, 1, 2")
 
 
 class ClientIDsField(BaseField):
@@ -179,10 +168,10 @@ class ClientIDsField(BaseField):
         super().__init__(type=list, **kwargs)
 
     def validate(self, value):
-        if len(list(filter(lambda item: isinstance(item, int), value))) == len(value) or not value:
-            super().validate(value)
+        if not value or len(list(filter(lambda item: isinstance(item, int), value))) == len(value):
+            return super().validate(value)
         else:
-            raise ValueError("Items of list must be integer")
+            raise ValidationError("Items of list must be integer")
 
 
 class ClientsInterestsRequest(BaseRequest):
@@ -241,8 +230,8 @@ def check_auth(request):
 
 
 def is_args_validated(req, inst):
-    if not inst.property_set('required').issubset(req.arguments.keys()):
-        return f"required fields:{inst.property_set('required').difference(req.arguments.keys())}", INVALID_REQUEST
+    if not inst.required_fields.issubset(req.arguments.keys()):
+        return f"required fields:{inst.required_fields.difference(req.arguments.keys())}", INVALID_REQUEST
     errors = inst.validate(req.arguments)
     if errors:
         return errors, INVALID_REQUEST
@@ -252,7 +241,7 @@ def is_args_validated(req, inst):
 def online_score(req, ctx, store):
     method_inst = OnlineScoreRequest()
     is_valid = is_args_validated(req, method_inst)
-    if is_valid != True:
+    if is_valid is not True:
         return is_valid
     ctx['has'] = method_inst.get_context(req.arguments)
     if req.is_admin:
@@ -266,22 +255,23 @@ def online_score(req, ctx, store):
 
 def clients_interests(req, ctx, store):
     method_inst = ClientsInterestsRequest()
-    is_valid = is_args_validated(req, method_inst) 
-    if is_valid !=True:
+    is_valid = is_args_validated(req, method_inst)
+    if is_valid is not True:
         return is_valid
     ctx['nclients'] = method_inst.get_context(req.arguments)
     return {str(item): scoring.get_interests(store, item) for item in method_inst.client_ids}, OK
 
 
 METHODS = {
-           "online_score": online_score, 
-           "clients_interests":clients_interests
+           "online_score": online_score,
+           "clients_interests": clients_interests
           }
+
 
 def method_handler(request, ctx, store):
     response, code = None, None
     req = MethodRequest()
-    if not req.property_set('required').issubset(set(request['body'].keys())):
+    if not req.required_fields.issubset(set(request['body'].keys())):
         return ERRORS[INVALID_REQUEST], INVALID_REQUEST
     errors = req.validate(request['body'])
     if errors:
@@ -289,6 +279,7 @@ def method_handler(request, ctx, store):
     if not check_auth(req):
         return ERRORS[FORBIDDEN], FORBIDDEN
     return METHODS[req.method](req, ctx, store)
+
 
 class MainHTTPHandler(BaseHTTPRequestHandler):
     router = {
