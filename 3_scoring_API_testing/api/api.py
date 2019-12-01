@@ -157,7 +157,9 @@ class GenderField(BaseField):
         super().__init__(type=int, **kwargs)
 
     def validate(self, value):
-        if not value or value in [UNKNOWN, MALE, FEMALE]:
+        if value in [UNKNOWN, MALE, FEMALE]:
+            return True
+        elif not value:
             return super().validate(value)
         else:
             raise ValidationError("Value must be integer 0, 1, 2")

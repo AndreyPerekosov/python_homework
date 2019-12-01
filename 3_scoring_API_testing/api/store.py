@@ -6,6 +6,7 @@ SERVER_CONFIG = ('localhost', 11211)
 
 def connect(func):
     def wraper(*args):
+        client = None
         for dummy_index in range(ATTEMPTS_OF_CONNECTIONS):
             try:
                 client = base.Client(SERVER_CONFIG, connect_timeout=20, timeout=20)
